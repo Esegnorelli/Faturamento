@@ -4,7 +4,7 @@
 # Execução: streamlit run app.py
 #
 # • 1 página, sem usar st.markdown/HTML
-# • Filtros via caixas de seleção (checkbox) para meses e lojas (com "Selecionar todos")
+# • Período via intervalo contínuo (AAAA‑MM) com select_slider + Lojas por checkboxes
 # • KPIs nativos (st.metric) com deltas MoM
 # • Gráficos coloridos e limpos: Faturamento, Pedidos, Ticket médio
 # • "Insights automáticos": MoM/YoY, Top Movimentos, YTD, Participação e Eficiência (com explicações em texto simples)
@@ -99,7 +99,7 @@ def fmt_brl(v) -> str:
 
 def fmt_int(v) -> str:
     try:
-        return f"{int(v):,}".replace(",",".")
+        return f"{int(v):,}".replace(",", ".")
     except Exception:
         return "0"
 
@@ -147,28 +147,24 @@ def load_data() -> pd.DataFrame:
 df = load_data()
 
 # -----------------------------------------------------------------------------
-# UI: CAIXAS DE SELEÇÃO (CHECKBOX) PARA FILTROS
+# UI: FILTROS (Período por intervalo + Lojas por checkboxes)
 # -----------------------------------------------------------------------------
 
 st.sidebar.header("Filtros")
 
-# Anos (checkboxes)
-anos = sorted(a for a in df["ano"].dropna().unique())
-st.sidebar.write("Anos (marque os anos):")
-all_anos = st.sidebar.checkbox("Selecionar todos os anos", value=True, key="all_anos")
-sel_anos = anos if all_anos else [a for a in anos if st.sidebar.checkbox(str(a), value=False, key=f"ano_{a}")]
-if not sel_anos:
-    sel_anos = anos  # fallback
+# Períodos (AAAA‑MM) como intervalo contínuo
+periodos = sorted(p for p in df["periodo"].dropna().unique().tolist())
+if len(periodos) == 0:
+    st.stop()
 
-# Meses (checkboxes)
-meses = sorted(m for m in df["mes"].dropna().unique())
-st.sidebar.write("Meses (marque os meses):")
-all_meses = st.sidebar.checkbox("Selecionar todos os meses", value=True, key="all_meses")
-sel_meses = meses if all_meses else [m for m in meses if st.sidebar.checkbox(str(m), value=False, key=f"mes_{m}")]
-if not sel_meses:
-    sel_meses = meses  # fallback
+rng_default = (periodos[0], periodos[-1])
+periodo_ini, periodo_fim = st.sidebar.select_slider(
+    "Período (AAAA‑MM)",
+    options=periodos,
+    value=rng_default,
+)
 
-# Lojas (checkboxes)
+# Lojas (checkboxes com "Selecionar todas")
 lojas = sorted(df["loja"].dropna().unique().tolist())
 st.sidebar.write("Lojas (marque as desejadas):")
 all_l = st.sidebar.checkbox("Selecionar todas as lojas", value=True, key="all_l")
@@ -177,9 +173,10 @@ if not sel_lojas:
     sel_lojas = lojas  # fallback
 
 # Aplica filtros
-mask = df["ano"].isin(sel_anos) & df["mes"].isin(sel_meses) & df["loja"].isin(sel_lojas)
+mask = (df["periodo"] >= periodo_ini) & (df["periodo"] <= periodo_fim) & (df["loja"].isin(sel_lojas))
 df_f = df.loc[mask].copy()
-df_lojas = df[df["loja"].isin(sel_lojas)].copy()  # para comparações globais
+# Para comparações globais (MoM/YoY, YTD, etc.), considera todas as datas das lojas selecionadas
+df_lojas = df[df["loja"].isin(sel_lojas)].copy()
 
 # -----------------------------------------------------------------------------
 # KPI ENGINE
@@ -272,8 +269,7 @@ k = compute_kpis(df_f, df_lojas)
 
 st.title("Dashboard Inteligente — Hora do Pastel")
 st.write(
-    f"Anos selecionados: {', '.join(str(a) for a in sel_anos)}  | "
-    f"Meses selecionados: {', '.join(str(m) for m in sel_meses)}  | "
+    f"Período: {periodo_ini} → {periodo_fim}  | "
     f"Lojas selecionadas: {len(sel_lojas)}"
 )
 
@@ -315,7 +311,6 @@ st.subheader("Evolução do faturamento")
 serie_f = (df_f.dropna(subset=["data"]).groupby("data", as_index=False)["faturamento"].sum().sort_values("data"))
 if not serie_f.empty:
     fig_f = px.line(serie_f, x="data", y="faturamento", markers=True)
-    # Deixa as linhas mais espessas e adiciona títulos aos eixos para clareza
     fig_f.update_traces(line=dict(width=3))
     fig_f.update_layout(
         height=320,
@@ -407,7 +402,6 @@ with col_c:
         if not tbl.empty:
             tbl = tbl.assign(mom_pct=100*tbl["mom"]).sort_values("mom_pct", ascending=False)
             top_up = tbl.head(10)
-            # Visualiza os top crescientes com barras horizontais para facilitar a leitura
             fig_up = px.bar(top_up, x="mom_pct", y="loja", orientation="h")
             fig_up.update_layout(
                 height=330,
@@ -494,5 +488,5 @@ else:
     st.dataframe(resumo, use_container_width=True, height=360)
     st.download_button("Baixar resumo (CSV)", data=resumo.to_csv(index=False).encode("utf-8"), file_name="resumo_faturamento.csv", mime="text/csv")
 
-st.caption("Os gráficos e KPIs se ajustam dinamicamente aos meses e lojas marcados nas caixas de seleção.")
+st.caption("Os gráficos e KPIs se ajustam dinamicamente ao intervalo de períodos e lojas selecionadas.")
 st.caption("Dashboard desenvolvido por Evandro Segnorelli.")
