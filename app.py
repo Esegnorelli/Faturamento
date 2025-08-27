@@ -13,7 +13,7 @@
 import os
 import re
 import unicodedata
-from dateutil.relativedelta import relativedelta
+from dateutil.relativelota import relativedelta
 
 import pandas as pd
 import plotly.express as px
