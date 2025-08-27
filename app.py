@@ -480,5 +480,15 @@ else:
         file_name="resumo_faturamento.csv",
         mime="text/csv",
     )
+try:
+    import statsmodels.api as sm
+except ModuleNotFoundError:
+    sm = None
+# ...
+# onde usa:
+if sm is None:
+    st.info("Instale 'statsmodels' (requirements.txt) para ver a decomposição de série.")
+else:
+    # segue a análise com sm.tsa.seasonal_decompose(...)
 
 st.caption("Dashboard aprimorado com novos indicadores inteligentes e correções de estabilidade.")
