@@ -1,5 +1,9 @@
-streamlit
-pandas
-plotly
-python-dateutil
+streamlit>=1.36
+pandas>=2.2
+plotly>=5.23
 numpy
+pillow
+python-dateutil
+statsmodels
+# opcional para exportar PNG dos gráficos
+# kaleido
