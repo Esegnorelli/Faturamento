@@ -95,6 +95,13 @@ def configure_page() -> None:
                 border-radius: 8px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                 text-align: center;
+                /*
+                 * Definimos uma cor de texto explícita para garantir contraste
+                 * adequado em temas escuros. Sem esta propriedade, a herança do
+                 * tema do Streamlit poderia deixar o texto branco em um card
+                 * branco, tornando-o ilegível.
+                 */
+                color: #212529;
             }
             .alert-success {
                 background-color: #d4edda;
@@ -351,7 +358,8 @@ def prepare_filters(df: pd.DataFrame) -> tuple[str, str, str, list[str], bool, b
     """
     # Logo (se existir)
     if os.path.exists("logo.png"):
-        st.sidebar.image("logo.png", use_column_width=True)
+        # use_container_width substitui use_column_width (deprecated) para adequar ao novo API.
+        st.sidebar.image("logo.png", use_container_width=True)
     st.sidebar.markdown("### 🎯 Filtros Avançados")
     # Modo de análise
     analysis_mode = st.sidebar.selectbox(
@@ -399,9 +407,13 @@ def prepare_filters(df: pd.DataFrame) -> tuple[str, str, str, list[str], bool, b
     # Seleção de lojas
     st.sidebar.markdown("#### 🏪 Seleção de Lojas")
     # Grupos de lojas para seleção em massa
+    # Agrupamentos de lojas para seleção em massa.
+    # Observação: na base de dados a loja "Protásio Alves" aparece com acento.
     GROUPS = {
-        "BGPF": ["Caxias do Sul", "Bento Goncalves", "Novo Hamburgo", "Sao leopoldo",
-                  "Canoas", "Protásio Alves", "Floresta", "Barra Shopping"],
+        "BGPF": [
+            "Caxias do Sul", "Bento Goncalves", "Novo Hamburgo", "Sao leopoldo",
+            "Canoas", "Protásio Alves", "Floresta", "Barra Shopping"
+        ],
         "Ismael": ["Montenegro", "Lajeado"]
     }
     selection_modes = ["Todas", "Manual", "Por Grupo", "Top Performers", "Personalizadas"]
@@ -1297,15 +1309,9 @@ def main() -> None:
     display_top_performers(df, periodo_ini, periodo_fim)
     # Insights finais
     insights = display_insights(k)
-    # Exportação de relatórios
-    # Preparar ranking para resumo executivo
-    rank_mask = (df["periodo"] >= periodo_ini) & (df["periodo"] <= periodo_fim) & df["pedidos"].notna()
-    rank_df = (
-        df.loc[rank_mask]
-        .groupby("loja", as_index=False)["pedidos"].sum()
-        .sort_values("pedidos", ascending=False)
-    )
-    display_exports(df_f, insights, k, rank_df, periodo_ini, periodo_fim, sel_lojas)
+    # Exportação de relatórios desativada a pedido do usuário.
+    # Se necessário, as funções de exportação podem ser reativadas facilmente.
+    # Não chamamos display_exports() e nem geramos arquivos de resumo ou CSV.
     # Configurações extras na sidebar
     with st.sidebar:
         st.markdown("---")
