@@ -29,8 +29,18 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from scipy.stats import pearsonr, zscore
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+
+# Tentativa de importação dos módulos de clustering. Caso não estejam disponíveis,
+# definimos indicadores nulos para evitar erros de importação.
+try:
+    from sklearn.cluster import KMeans  # type: ignore
+    from sklearn.preprocessing import StandardScaler  # type: ignore
+    HAS_SKLEARN = True
+except ImportError:
+    KMeans = None  # type: ignore
+    StandardScaler = None  # type: ignore
+    HAS_SKLEARN = False
+
 from typing import Optional, Any, Dict, Tuple, List, Sequence
 
 # Statsmodels com fallback
@@ -99,7 +109,7 @@ def configure_advanced_page() -> None:
         
         .kpi-card {
             background: white; padding: 1.5rem; border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             border-left: 4px solid #667eea;
             transition: transform 0.2s ease-in-out;
         }
@@ -445,7 +455,7 @@ def compute_advanced_kpis(df_filtered: pd.DataFrame, df_historical: pd.DataFrame
             periodo_anterior_valor = float(periodo_anterior.sum())
     
     # Métricas avançadas
-    kpis = {}
+    kpis: Dict[str, IntelligentKPI] = {}
     
     # Taxa de crescimento composto
     if len(serie_atual) > 1:
@@ -728,6 +738,11 @@ def render_clustering_analysis(df: pd.DataFrame) -> None:
     """Análise de clustering para segmentação automática de lojas."""
     st.markdown("### 🎯 Segmentação Inteligente de Lojas")
     
+    # Se a biblioteca scikit-learn não estiver instalada, informamos o usuário e encerramos a função.
+    if not HAS_SKLEARN:
+        st.info("Clustering requer a biblioteca scikit-learn. Instale-a para habilitar este módulo.")
+        return
+    
     # Preparar dados para clustering
     features_data = df.groupby("loja").agg({
         "faturamento": ["mean", "std"],
@@ -786,7 +801,7 @@ def render_clustering_analysis(df: pd.DataFrame) -> None:
     
     cluster_names = {
         0: "High Volume",
-        1: "Premium", 
+        1: "Premium",
         2: "Balanced",
         3: "Growing"
     }
@@ -944,7 +959,6 @@ def render_forecasting_module(kpis_data: Dict[str, Any], periods: int = 6) -> No
             **Limitações**: Assume que padrões passados se repetirão. Eventos externos 
             (crises, promoções, mudanças sazonais) podem afetar a precisão.
             """)
-            
     except Exception as e:
         st.error(f"Erro na geração de previsões: {str(e)}")
 
@@ -1066,7 +1080,7 @@ def render_business_insights_engine(kpis_data: Dict[str, Any], df: pd.DataFrame)
     
     # Volatility insights
     if "volatility" in intelligent_kpis:
-        vol_kpi = intelligent_kpis["volatility"] 
+        vol_kpi = intelligent_kpis["volatility"]
         vol_class, _ = vol_kpi.performance_class
         
         if vol_class == "atencao":
@@ -1114,7 +1128,7 @@ def render_business_insights_engine(kpis_data: Dict[str, Any], df: pd.DataFrame)
     if insights:
         # Separar por prioridade
         high_priority = [i for i in insights if i["priority"] == "alta"]
-        medium_priority = [i for i in insights if i["priority"] == "media"] 
+        medium_priority = [i for i in insights if i["priority"] == "media"]
         low_priority = [i for i in insights if i["priority"] == "baixa"]
         
         for priority_group, title in [(high_priority, "🚨 Alta Prioridade"), 
@@ -1344,7 +1358,7 @@ def main() -> None:
         
         if show_clustering:
             render_clustering_analysis(df_filtered)
-            
+        
     elif selected_mode == "Previsões":
         render_intelligent_kpi_panel(kpis_data)
         render_forecasting_module(kpis_data)
