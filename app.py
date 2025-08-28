@@ -132,6 +132,36 @@ def configure_page() -> None:
         unsafe_allow_html=True
     )
 
+    # Estilos adicionais para exibir pódio de top performers
+    st.markdown(
+        """
+        <style>
+            /* Container para os cartões em estilo pódio */
+            .podium-container {
+                display: flex;
+                justify-content: center;
+                align-items: flex-end;
+                gap: 0.5rem;
+                margin-top: 1rem;
+            }
+            .podium-item {
+                flex: 1;
+                padding: 1rem;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                text-align: center;
+                background: white;
+                color: #212529;
+            }
+            /* Destaque a coluna do primeiro lugar elevando-a */
+            .podium-item.first {
+                transform: translateY(-15px);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
 
 # -----------------------------------------------------------------------------
 # FUNÇÕES AUXILIARES
@@ -1168,29 +1198,38 @@ def display_top_performers(df: pd.DataFrame, periodo_ini: str, periodo_fim: str)
             top_fat = agg_data.loc[agg_data['faturamento'].idxmax()]
             top_ped = agg_data.loc[agg_data['pedidos'].idxmax()]
             top_ticket = agg_data.loc[agg_data['ticket'].idxmax()]
+            # Dados para o pódio: associamos cada métrica ao nome da loja, valor e ícone
             metrics_data = {
-                'Faturamento': (top_fat['loja'], top_fat['faturamento']),
-                'Pedidos': (top_ped['loja'], top_ped['pedidos']),
-                'Ticket': (top_ticket['loja'], top_ticket['ticket'])
+                'Faturamento': (top_fat['loja'], top_fat['faturamento'], '💰'),
+                'Pedidos': (top_ped['loja'], top_ped['pedidos'], '🛒'),
+                'Ticket': (top_ticket['loja'], top_ticket['ticket'], '🎫')
             }
-            metric_cols = st.columns(3)
-            for idx, (metric_name, (store_name, value)) in enumerate(metrics_data.items()):
-                with metric_cols[idx]:
-                    # Formata valores de acordo com a métrica
-                    if metric_name == 'Faturamento' or metric_name == 'Ticket':
-                        value_fmt = fmt_brl(value)
-                    else:
-                        value_fmt = fmt_int(value)
-                    st.markdown(
-                        f"""
-                        <div class="metric-card">
-                            <h4>{metric_name}</h4>
-                            <p><strong>{store_name}</strong></p>
-                            <p>{value_fmt}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+            # Constrói HTML para o pódio com três colunas
+            podium_html = '<div class="podium-container">'
+            # A segunda entrada (Pedidos) é renderizada no centro, o que equivale ao primeiro lugar no pódio
+            # Ordenação com faturamento no centro (primeiro lugar), pedidos em segundo e ticket em terceiro
+            # Ordenação no layout: exibe Pedidos à esquerda, Faturamento ao centro (destacado) e Ticket à direita
+            ordered_metrics = ['Pedidos', 'Faturamento', 'Ticket']
+            for idx, metric_name in enumerate(ordered_metrics):
+                store_name, value, icon = metrics_data[metric_name]
+                # Formata valores de acordo com a métrica
+                if metric_name in ['Faturamento', 'Ticket']:
+                    value_fmt = fmt_brl(value)
+                else:
+                    value_fmt = fmt_int(value)
+                # Destaca o centro (faturamento) como primeiro lugar do pódio
+                cls = 'podium-item'
+                if metric_name == 'Faturamento':
+                    cls += ' first'
+                podium_html += (
+                    f'<div class="{cls}">'  # card container
+                    f'<h4>{icon} {metric_name}</h4>'
+                    f'<p><strong>{store_name}</strong></p>'
+                    f'<p>{value_fmt}</p>'
+                    '</div>'
+                )
+            podium_html += '</div>'
+            st.markdown(podium_html, unsafe_allow_html=True)
 
 
 def display_insights(k: dict) -> list[str]:
