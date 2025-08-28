@@ -401,7 +401,7 @@ def prepare_filters(df: pd.DataFrame) -> tuple[str, str, str, list[str], bool, b
     # Grupos de lojas para seleção em massa
     GROUPS = {
         "BGPF": ["Caxias do Sul", "Bento Goncalves", "Novo Hamburgo", "Sao leopoldo",
-                  "Canoas", "Protasio", "Floresta", "Barra Shopping"],
+                  "Canoas", "Protásio Alves", "Floresta", "Barra Shopping"],
         "Ismael": ["Montenegro", "Lajeado"]
     }
     selection_modes = ["Todas", "Manual", "Por Grupo", "Top Performers", "Personalizadas"]
