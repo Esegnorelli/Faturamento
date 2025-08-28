@@ -33,6 +33,9 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from scipy.stats import pearsonr
 
+# Importa Optional para anotações de tipo utilizadas em funções (por exemplo, display_top_performers)
+from typing import Optional
+
 # Blindamos o import de statsmodels para evitar falhas em deploys sem a dependência
 try:
     import statsmodels.api as sm  # type: ignore
@@ -1156,7 +1159,123 @@ def display_detailed_analysis(df_f: pd.DataFrame, df_lojas: pd.DataFrame, k: dic
             st.plotly_chart(fig_mobile, use_container_width=True)
 
 
-🏆 Top Performers do Período
+def display_top_performers(
+    df: pd.DataFrame,
+    periodo_ini: str,
+    periodo_fim: str,
+    *,
+    top_n: int = 3,
+    show_podium: bool = True,
+) -> None:
+    """
+    Exibe:
+      1) Ranking Top-N por PEDIDOS (🥇🥈🥉)
+      2) Pódio por métrica (💰 Faturamento | 🛒 Pedidos | 🎫 Ticket)
+
+    Requisitos de colunas: ['periodo','loja','pedidos','faturamento'].
+    Usa os helpers globais: fmt_int, fmt_brl, safe_div.
+    """
+
+    st.markdown("### 🏆 Top Performers do Período")
+
+    # Validações básicas: certifique-se de que as colunas necessárias estão presentes
+    required_cols = {"periodo", "loja", "pedidos", "faturamento"}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        st.warning(f"Faltam colunas para esta seção: {', '.join(sorted(missing))}")
+        return
+
+    # Filtra o dataframe pelo período selecionado
+    mask = (df["periodo"] >= periodo_ini) & (df["periodo"] <= periodo_fim)
+    base = df.loc[mask, ["loja", "periodo", "pedidos", "faturamento"]].copy()
+
+    # Se não houver dados válidos, encerra a função
+    if base.empty or base["pedidos"].notna().sum() == 0:
+        st.info("Nenhum dado válido para o período selecionado.")
+        return
+
+    # Agrupa dados por loja (somente uma agregação para todas as métricas)
+    agg = (
+        base.dropna(subset=["loja"])
+            .groupby("loja", as_index=False)
+            .agg(faturamento=("faturamento", "sum"),
+                 pedidos=("pedidos", "sum"))
+    )
+    # Calcula ticket médio de forma vetorizada, evitando apply linha a linha
+    agg["ticket"] = agg["faturamento"] / agg["pedidos"].replace(0, np.nan)
+    agg["ticket"] = agg["ticket"].fillna(0.0)
+
+    # ---------- 1) Ranking Top-N por PEDIDOS ----------
+    rank = agg.sort_values("pedidos", ascending=False).head(max(1, min(top_n, len(agg))))
+    if not rank.empty:
+        cols = st.columns(len(rank))
+        total_ped = int(agg["pedidos"].sum()) if pd.notna(agg["pedidos"].sum()) else 0
+
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (_, row) in enumerate(rank.reset_index(drop=True).iterrows()):
+            pct = (row["pedidos"] / total_ped * 100) if total_ped else 0.0
+            pos = medals[i] if i < len(medals) else f"{i+1}º"
+            with cols[i]:
+                st.markdown(
+                    f"""
+                    <div class="metric-card">
+                        <h3>{pos} {row['loja']}</h3>
+                        <p><strong>{fmt_int(row['pedidos'])}</strong> pedidos</p>
+                        <p>{pct:.1f}% do total</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    # ---------- 2) Pódio por métrica ----------
+    if show_podium and not agg.empty:
+        # Função interna para capturar a linha com maior valor de uma coluna
+        def _top_row(col: str) -> Optional[pd.Series]:
+            s = agg[col]
+            if s.notna().any():
+                return agg.loc[s.idxmax()]
+            return None
+
+        top_fat_row = _top_row("faturamento")
+        top_ped_row = _top_row("pedidos")
+        top_tkt_row = _top_row("ticket")
+
+        metrics_data = []
+        if top_fat_row is not None:
+            metrics_data.append(("Faturamento", top_fat_row["loja"], top_fat_row["faturamento"], "💰"))
+        if top_ped_row is not None:
+            metrics_data.append(("Pedidos",     top_ped_row["loja"], top_ped_row["pedidos"],     "🛒"))
+        if top_tkt_row is not None:
+            metrics_data.append(("Ticket",      top_tkt_row["loja"], top_tkt_row["ticket"],      "🎫"))
+
+        if metrics_data:
+            # Ordena para que Faturamento apareça ao centro (primeiro lugar),
+            # seguido de Pedidos à esquerda e Ticket à direita
+            order = {"Faturamento": 1, "Pedidos": 2, "Ticket": 3}
+            metrics_data.sort(key=lambda x: order.get(x[0], 99))
+
+            html = ['<div class="podium-container">']
+            for metric, loja, valor, icon in metrics_data:
+                # Define a classe CSS: somente Faturamento recebe 'first' para destaque
+                cls = "podium-item first" if metric == "Faturamento" else "podium-item"
+                # Formata valor conforme a métrica
+                if metric in ("Faturamento", "Ticket"):
+                    val_fmt = fmt_brl(valor)
+                else:
+                    val_fmt = fmt_int(valor)
+                html.append(
+                    f"""
+                    <div class="{cls}">
+                        <h4>{icon} {metric}</h4>
+                        <p><strong>{loja}</strong></p>
+                        <p>{val_fmt}</p>
+                    </div>
+                    """
+                )
+            html.append("</div>")
+            st.markdown("#### Pódio por Categoria")
+            st.markdown("".join(html), unsafe_allow_html=True)
+
 
 def display_insights(k: dict) -> list[str]:
     """Gera e exibe insights finais com base nos KPIs."""
