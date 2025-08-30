@@ -12,31 +12,32 @@ document.addEventListener('DOMContentLoaded', function() {
     loadData();
 });
 
-// Carregamento dos dados do CSV
+// Carregamento dos dados diretamente do arquivo data.js
 function loadData() {
-    Papa.parse('Faturamento.csv', {
-        download: true,
-        header: true,
-        dynamicTyping: true,
-        complete: function(results) {
-            rawData = results.data.filter(row => row.mes && row.ano && row.loja);
-            filteredData = [...rawData];
-            
-            populateFilters();
-            updateDashboard();
-            createCharts();
-            populateTable();
-            
-            // Event listeners para filtros
-            document.getElementById('yearFilter').addEventListener('change', applyFilters);
-            document.getElementById('monthFilter').addEventListener('change', applyFilters);
-            document.getElementById('storeFilter').addEventListener('change', applyFilters);
-        },
-        error: function(error) {
-            console.error('Erro ao carregar dados:', error);
-            alert('Erro ao carregar dados do arquivo CSV');
-        }
-    });
+    try {
+        // Usar dados do arquivo data.js
+        rawData = faturamentoData.filter(row => row.mes && row.ano && row.loja);
+        filteredData = [...rawData];
+        
+        console.log(`Dados carregados: ${rawData.length} registros`);
+        
+        populateFilters();
+        updateDashboard();
+        createCharts();
+        populateTable();
+        
+        // Event listeners para filtros
+        document.getElementById('yearFilter').addEventListener('change', applyFilters);
+        document.getElementById('monthFilter').addEventListener('change', applyFilters);
+        document.getElementById('storeFilter').addEventListener('change', applyFilters);
+        
+        // Animar métricas após carregar
+        setTimeout(animateMetrics, 500);
+        
+    } catch (error) {
+        console.error('Erro ao carregar dados:', error);
+        alert('Erro ao carregar dados. Verifique se o arquivo data.js está disponível.');
+    }
 }
 
 // Popular filtros
@@ -462,8 +463,16 @@ function updateDashboard() {
 
 // Função para exportar dados filtrados (funcionalidade extra)
 function exportFilteredData() {
-    const csv = Papa.unparse(filteredData);
-    const blob = new Blob([csv], { type: 'text/csv' });
+    // Criar CSV manualmente
+    const headers = ['mes', 'ano', 'loja', 'faturamento', 'pedidos', 'ticket', 'periodo'];
+    const csvContent = [
+        headers.join(','),
+        ...filteredData.map(row => [
+            row.mes, row.ano, `"${row.loja}"`, row.faturamento, row.pedidos, row.ticket, row.periodo
+        ].join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

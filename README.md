@@ -16,11 +16,19 @@ Dashboard interativo para visualização e análise dos dados de faturamento da 
 
 ## 🚀 Como usar
 
-1. **Abrir o dashboard**: Abra o arquivo `index.html` em um navegador web
-2. **Visualizar dados**: Os dados são carregados automaticamente do arquivo `Faturamento.csv`
-3. **Aplicar filtros**: Use os filtros no topo para refinar a análise por período ou loja
-4. **Interagir com gráficos**: Passe o mouse sobre os gráficos para ver detalhes
-5. **Pesquisar na tabela**: Use a caixa de pesquisa para encontrar registros específicos
+### Método 1: Servidor Local (Recomendado)
+1. **Iniciar servidor**: Execute `python3 servidor.py` no terminal
+2. **Acessar dashboard**: O navegador abrirá automaticamente ou acesse http://localhost:8000
+3. **Visualizar dados**: Os dados são carregados automaticamente
+
+### Método 2: Arquivo Local
+1. **Abrir o dashboard**: Abra o arquivo `index.html` diretamente no navegador
+2. **Nota**: Alguns navegadores podem bloquear arquivos locais
+
+### Interagindo com o Dashboard
+1. **Aplicar filtros**: Use os filtros no topo para refinar a análise por período ou loja
+2. **Interagir com gráficos**: Passe o mouse sobre os gráficos para ver detalhes
+3. **Pesquisar na tabela**: Use a caixa de pesquisa para encontrar registros específicos
 
 ## 📁 Estrutura do Projeto
 
@@ -29,8 +37,10 @@ Faturamento/
 ├── index.html          # Página principal do dashboard
 ├── style.css           # Estilos e design responsivo
 ├── script.js           # Lógica JavaScript e funcionalidades
-├── Faturamento.csv     # Dados de faturamento
+├── data.js             # Dados em formato JavaScript
+├── Faturamento.csv     # Dados de faturamento (original)
 ├── logo.png           # Logo da Hora do Pastel
+├── servidor.py         # Servidor HTTP local
 └── README.md          # Esta documentação
 ```
 
