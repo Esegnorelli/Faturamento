@@ -1,9 +1,7 @@
-streamlit>=1.36
-pandas>=2.2
-plotly>=5.23
-numpy
-pillow
-python-dateutil
-statsmodels
-# opcional para exportar PNG dos gráficos
-# kaleido
+streamlit==1.28.1
+pandas==2.1.3
+numpy==1.24.3
+plotly==5.17.0
+seaborn==0.13.0
+matplotlib==3.8.2
+datetime
