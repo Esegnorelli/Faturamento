@@ -65,7 +65,7 @@ st.markdown("""
 def load_and_process_data():
     """Carrega e processa os dados com análises avançadas"""
     try:
-        df = pd.read_csv('public/Faturamento.csv')
+        df = pd.read_csv('Faturamento.csv')
         
         # Converter tipos
         df['faturamento'] = pd.to_numeric(df['faturamento'], errors='coerce')
