@@ -1,14 +1,46 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
+import io
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# =====================================================================
-# CONSTANTES
-# =====================================================================
+"""
+Hora do Pastel — Dashboard ‘Perfeito’ (v3)
+-----------------------------------------
+Como executar:
+    streamlit run hora_do_pastel_dashboard_perfeito.py
+
+O app lê, por padrão, um arquivo "Faturamento.csv" na mesma pasta.
+Você também pode enviar um CSV pela sidebar (tem prioridade sobre o arquivo local).
+
+Formato esperado (nomes podem variar; o script normaliza):
+    Data (mm/aaaa ou dd/mm/aaaa)
+    Loja
+    Faturamento (R$ opcional)
+    Pedidos (inteiro)
+    Ticket Médio (opcional)
+
+Principais melhorias da v3:
+- Upload direto no app + cache inteligente
+- Parser de datas robusto (mm/aaaa ou dd/mm/aaaa)
+- KPIs com variações MoM, rankings, alertas, sazonalidade e heatmap
+- Exportadores (CSV dos dados filtrados e agregado mensal)
+- Formatação BR (R$ e milhares)
+- Controles de filtro práticos (Selecionar tudo / Limpar)
+"""
+
+# ============================
+# CONSTANTES E UTILITÁRIOS
+# ============================
+APP_TITLE = "🥟 Hora do Pastel — Insights de Faturamento"
+APP_CAPTION = (
+    "KPIs enxutos, rankings, alertas e sazonalidade para decisões rápidas "
+    "nas lojas da rede."
+)
+
 MESES = {
     1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
     5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
@@ -19,235 +51,179 @@ COLUNAS_REQUERIDAS = {"Data", "Loja"}
 QUEDA_ALERTA_THRESHOLD = -30  # Percentual para alertas de queda
 TOP_N = 10  # Número de itens em rankings
 
-# =====================================================================
-# FUNÇÕES AUXILIARES
-# =====================================================================
+# ============================
+# CARREGAMENTO
+# ============================
+@st.cache_data(show_spinner=False)
+def _ler_csv_bytes(arquivo_subido: bytes) -> pd.DataFrame:
+    head = arquivo_subido[:8192].decode("utf-8", errors="ignore")
+    sep = ";" if ";" in head else ","
+    return pd.read_csv(io.BytesIO(arquivo_subido), sep=sep, encoding="utf-8")
 
-@st.cache_data
-def carregar_dados(caminho: Path) -> pd.DataFrame:
-    """Carrega e faz parse do CSV com tratamento de diferentes separadores."""
-    if not caminho.exists():
-        raise FileNotFoundError(f"Arquivo {caminho} não encontrado.")
-    
+@st.cache_data(show_spinner=False)
+def _ler_csv_caminho(caminho: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(caminho, encoding="utf-8", sep=";")
+        return pd.read_csv(caminho, encoding="utf-8-sig", sep=";")
     except Exception:
-        return pd.read_csv(caminho, encoding="utf-8", sep=",")
+        return pd.read_csv(caminho, encoding="utf-8-sig", sep=",")
+
+# ============================
+# LIMPEZA E TRANSFORMAÇÕES
+# ============================
+def _normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
+    mapa = {}
+    for c in df.columns:
+        k = str(c).strip().lower()
+        if k == "data": mapa[c] = "Data"
+        elif k == "loja": mapa[c] = "Loja"
+        elif k in ("faturamento", "receita", "valor"): mapa[c] = "Faturamento"
+        elif k in ("pedidos", "qtd_pedidos", "qtd"): mapa[c] = "Pedidos"
+        elif k in ("ticket médio", "ticket medio", "ticket_medio", "ticket-medio"): mapa[c] = "Ticket Médio"
+    return df.rename(columns=mapa)
 
 
-def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza nomes de colunas para padrão esperado."""
-    mapeamento = {}
-    for col in df.columns:
-        col_lower = str(col).strip().lower()
-        if col_lower == "data":
-            mapeamento[col] = "Data"
-        elif col_lower == "loja":
-            mapeamento[col] = "Loja"
-        elif col_lower in ("faturamento", "receita", "valor"):
-            mapeamento[col] = "Faturamento"
-        elif col_lower in ("pedidos", "qtd_pedidos", "qtd"):
-            mapeamento[col] = "Pedidos"
-        elif col_lower in ("ticket médio", "ticket medio", "ticket_medio", "ticket-medio"):
-            mapeamento[col] = "Ticket Médio"
-    
-    return df.rename(columns=mapeamento)
+def _limpar_valor(serie: pd.Series) -> pd.Series:
+    s = serie.astype(str)
+    s = (s.str.replace("R$", "", regex=False)
+           .str.replace(" ", "", regex=False)
+           .str.replace(".", "", regex=False)
+           .str.replace(",", "."))
+    return s
 
 
-def limpar_valor_monetario(serie: pd.Series) -> pd.Series:
-    """Remove formatação monetária brasileira e converte para float."""
-    if pd.api.types.is_string_dtype(serie):
-        return (
-            serie.astype(str)
-            .str.replace("R$", "", regex=False)
-            .str.replace(" ", "", regex=False)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".")
-        )
-    return serie
+def _parse_data(col: pd.Series) -> pd.Series:
+    s = col.astype(str).str.strip()
+    m_mmyyyy = s.str.match(r"^\d{1,2}/\d{4}$")
+    m_ddmmyyyy = s.str.match(r"^\d{1,2}/\d{1,2}/\d{4}$")
+
+    dt1 = pd.to_datetime(s.where(m_ddmmyyyy), dayfirst=True, errors="coerce")
+    dt2 = pd.to_datetime("01/" + s.where(m_mmyyyy), format="%d/%m/%Y", errors="coerce")
+    dt3 = pd.to_datetime(s, dayfirst=True, errors="coerce")
+    return dt1.fillna(dt2).fillna(dt3)
 
 
 def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica limpeza e transformações nos dados."""
-    # Validação de colunas
-    if not COLUNAS_REQUERIDAS.issubset(set(df.columns)):
+    if not COLUNAS_REQUERIDAS.issubset(df.columns):
         raise ValueError(f"CSV precisa ter ao menos: {', '.join(COLUNAS_REQUERIDAS)}")
-    
-    # Conversão de tipos
-    df["Data"] = pd.to_datetime(df["Data"], errors="coerce", dayfirst=True)
-    df = df.dropna(subset=["Data"]).copy()
-    df["Loja"] = df["Loja"].astype(str).str.strip().str.title()
-    
-    # Limpeza de valores monetários
-    df["Faturamento"] = pd.to_numeric(
-        limpar_valor_monetario(df.get("Faturamento", pd.Series([0]))),
-        errors="coerce"
-    ).fillna(0.0)
-    
-    df["Pedidos"] = pd.to_numeric(
-        limpar_valor_monetario(df.get("Pedidos", pd.Series([0]))),
-        errors="coerce"
-    ).fillna(0).astype(int)
-    
+
+    df = df.copy()
+    df["Data"] = _parse_data(df["Data"])  # aceita mm/aaaa e dd/mm/aaaa
+    df = df.dropna(subset=["Data"])  # remove datas inválidas
+
+    df["Loja"] = (df["Loja"].astype(str).str.strip()
+                                .str.replace(r"\s+", " ", regex=True)
+                                .str.title())
+
+    if "Faturamento" in df.columns:
+        df["Faturamento"] = pd.to_numeric(_limpar_valor(df["Faturamento"]), errors="coerce").fillna(0.0)
+    else:
+        df["Faturamento"] = 0.0
+
+    if "Pedidos" in df.columns:
+        df["Pedidos"] = pd.to_numeric(_limpar_valor(df["Pedidos"]), errors="coerce").fillna(0).astype(int)
+    else:
+        df["Pedidos"] = 0
+
     if "Ticket Médio" in df.columns:
-        df["Ticket Médio"] = pd.to_numeric(
-            limpar_valor_monetario(df["Ticket Médio"]),
-            errors="coerce"
-        )
+        df["Ticket Médio"] = pd.to_numeric(_limpar_valor(df["Ticket Médio"]), errors="coerce")
     else:
         df["Ticket Médio"] = np.nan
-    
-    # Colunas derivadas
+
     df["Ano"] = df["Data"].dt.year
     df["Mes"] = df["Data"].dt.month
     df["MesNome"] = df["Mes"].map(MESES)
     df["Mes/Ano"] = df["Data"].dt.to_period("M").dt.to_timestamp()
-    
+
     return df.sort_values(["Data", "Loja"]).reset_index(drop=True)
 
-
-def calcular_variacao_mom(
-    df: pd.DataFrame,
-    meses: List[pd.Timestamp],
-    coluna: str
-) -> Optional[float]:
-    """Calcula variação Month-over-Month (MoM) em percentual."""
+# ============================
+# CÁLCULOS
+# ============================
+def _variacao_mom(df: pd.DataFrame, meses: List[pd.Timestamp], coluna: str) -> Optional[float]:
     if len(meses) < 2:
         return None
-    
-    mes_atual, mes_anterior = meses[-1], meses[-2]
-    valor_atual = df[df["Mes/Ano"] == mes_atual][coluna].sum()
-    valor_anterior = df[df["Mes/Ano"] == mes_anterior][coluna].sum()
-    
-    if valor_anterior == 0:
+    a, b = meses[-1], meses[-2]
+    va = df[df["Mes/Ano"] == a][coluna].sum()
+    vb = df[df["Mes/Ano"] == b][coluna].sum()
+    if vb == 0:
         return None
-    
-    return (valor_atual - valor_anterior) / valor_anterior * 100
+    return (va - vb) / vb * 100
 
 
-def calcular_variacao_ticket_mom(
-    df: pd.DataFrame,
-    meses: List[pd.Timestamp]
-) -> Optional[float]:
-    """Calcula variação MoM do ticket médio."""
+def _variacao_ticket_mom(df: pd.DataFrame, meses: List[pd.Timestamp]) -> Optional[float]:
     if len(meses) < 2:
         return None
-    
-    mes_atual, mes_anterior = meses[-1], meses[-2]
-    
-    # Calcula tickets médios
-    atual = df[df["Mes/Ano"] == mes_atual]
-    anterior = df[df["Mes/Ano"] == mes_anterior]
-    
-    ticket_atual = atual["Faturamento"].sum() / atual["Pedidos"].sum() if atual["Pedidos"].sum() > 0 else np.nan
-    ticket_anterior = anterior["Faturamento"].sum() / anterior["Pedidos"].sum() if anterior["Pedidos"].sum() > 0 else np.nan
-    
-    if pd.notna(ticket_anterior) and ticket_anterior > 0:
-        return (ticket_atual - ticket_anterior) / ticket_anterior * 100
-    
+    a, b = meses[-1], meses[-2]
+    atual = df[df["Mes/Ano"] == a]
+    ant = df[df["Mes/Ano"] == b]
+    ta = atual["Faturamento"].sum() / atual["Pedidos"].sum() if atual["Pedidos"].sum() > 0 else np.nan
+    tb = ant["Faturamento"].sum() / ant["Pedidos"].sum() if ant["Pedidos"].sum() > 0 else np.nan
+    if pd.notna(tb) and tb > 0:
+        return (ta - tb) / tb * 100
     return None
 
 
-def formatar_moeda(valor: float) -> str:
-    """Formata valor para padrão monetário brasileiro."""
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def _fmt_moeda(x: float) -> str:
+    return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def formatar_inteiro(valor: float) -> str:
-    """Formata inteiro com separador de milhares."""
-    return f"{int(valor):,}".replace(",", ".")
+def _fmt_int(x: float) -> str:
+    return f"{int(x):,}".replace(",", ".")
 
 
-def formatar_percentual(valor: Optional[float]) -> str:
-    """Formata percentual com 1 casa decimal."""
-    return f"{valor:.1f}%".replace(".", ",") if valor is not None else "—"
+def _fmt_pct(x: Optional[float]) -> str:
+    return (f"{x:.1f}%".replace(".", ",") if x is not None else "—")
 
 
-def gerar_alertas(
-    mensal: pd.DataFrame,
-    dados_filtrados: pd.DataFrame,
-    meses: List[pd.Timestamp]
-) -> List[Tuple[str, str]]:
-    """
-    Gera lista de alertas com base em quedas, recordes e lojas sem faturamento.
-    Retorna lista de tuplas (tipo, mensagem) onde tipo é 'success', 'warning' ou 'error'.
-    """
-    alertas = []
-    
-    # Alertas de quedas MoM
+def gerar_alertas(mensal: pd.DataFrame, filtrado: pd.DataFrame, meses: List[pd.Timestamp]) -> list[tuple[str, str]]:
+    alertas: list[tuple[str, str]] = []
     if len(meses) >= 2:
-        mes_atual, mes_anterior = meses[-1], meses[-2]
-        
-        atual = mensal[mensal["Mes/Ano"] == mes_atual].set_index("Loja")
-        anterior = mensal[mensal["Mes/Ano"] == mes_anterior].set_index("Loja")
-        
-        comparacao = atual[["Faturamento"]].join(
-            anterior[["Faturamento"]],
-            lsuffix="_atual",
-            rsuffix="_anterior"
-        )
-        comparacao["var_%"] = (
-            (comparacao["Faturamento_atual"] - comparacao["Faturamento_anterior"]) /
-            comparacao["Faturamento_anterior"].replace({0: np.nan}) * 100
-        )
-        
-        quedas = comparacao.dropna().sort_values("var_%")
-        
-        for loja, row in quedas.iterrows():
+        a, b = meses[-1], meses[-2]
+        atual = mensal[mensal["Mes/Ano"] == a].set_index("Loja")
+        ant = mensal[mensal["Mes/Ano"] == b].set_index("Loja")
+        comp = atual[["Faturamento"]].join(ant[["Faturamento"]], lsuffix="_atual", rsuffix="_anterior")
+        comp["var_%"] = (comp["Faturamento_atual"] - comp["Faturamento_anterior"]) / comp["Faturamento_anterior"].replace({0: np.nan}) * 100
+        comp = comp.dropna().sort_values("var_%")
+        for loja, row in comp.iterrows():
             if row["var_%"] <= QUEDA_ALERTA_THRESHOLD:
-                alertas.append((
-                    "warning",
-                    f"⚠️ {loja}: queda de {row['var_%']:.1f}% vs mês anterior."
-                ))
-    
-    # Alertas de lojas sem faturamento
-    lojas_zeradas = dados_filtrados.groupby("Loja")["Faturamento"].sum()
-    for loja in lojas_zeradas[lojas_zeradas == 0].index:
+                alertas.append(("warning", f"⚠️ {loja}: queda de {row['var_%']:.1f}% vs mês anterior."))
+
+    zeradas = filtrado.groupby("Loja")["Faturamento"].sum()
+    for loja in zeradas[zeradas == 0].index:
         alertas.append(("error", f"🛑 {loja}: sem faturamento neste recorte."))
-    
-    # Alertas de recordes
-    for loja, grupo in mensal.groupby("Loja"):
-        grupo = grupo.sort_values("Mes/Ano")
-        if len(grupo) >= 2:
-            fat_ultimo = grupo.iloc[-1]["Faturamento"]
-            if fat_ultimo == grupo["Faturamento"].max() and fat_ultimo > 0:
-                alertas.append((
-                    "success",
-                    f"✅ {loja}: maior faturamento mensal do histórico no recorte."
-                ))
-    
+
+    for loja, g in mensal.groupby("Loja"):
+        g = g.sort_values("Mes/Ano")
+        if len(g) >= 2:
+            u = g.iloc[-1]["Faturamento"]
+            if u == g["Faturamento"].max() and u > 0:
+                alertas.append(("success", f"✅ {loja}: maior faturamento mensal do histórico no recorte."))
+
     return alertas
 
+# ============================
+# PÁGINA
+# ============================
+st.set_page_config(page_title=APP_TITLE, page_icon="🥟", layout="wide")
+st.title(APP_TITLE)
+st.caption(APP_CAPTION)
 
-# =====================================================================
-# CONFIGURAÇÃO DA PÁGINA
-# =====================================================================
-st.set_page_config(
-    page_title="Faturamento — Insights",
-    page_icon="📈",
-    layout="wide"
-)
+with st.sidebar:
+    st.header("📥 Fonte de dados")
+    up = st.file_uploader("Envie um CSV (opcional)", type=["csv"])
+    st.markdown("— ou —")
+    st.code("Faturamento.csv", language="bash")
 
-st.title("📈 Faturamento por Loja — Insights")
-st.caption(
-    "Interface minimalista focada em decisões: KPIs com contexto, "
-    "rankings, alertas, sazonalidade e tabela."
-)
-
-# =====================================================================
-# CARREGAMENTO E PROCESSAMENTO DOS DADOS
-# =====================================================================
+# Carrega dados (upload tem prioridade)
 try:
-    caminho_csv = (
-        Path(__file__).parent / "Faturamento.csv"
-        if "__file__" in globals()
-        else Path("Faturamento.csv")
-    )
-    
-    dados_raw = carregar_dados(caminho_csv)
-    dados_raw = normalizar_colunas(dados_raw)
-    dados = processar_dados(dados_raw)
-    
+    if up is not None:
+        _raw = _ler_csv_bytes(up.read())
+    else:
+        caminho = (Path(__file__).parent / "Faturamento.csv") if "__file__" in globals() else Path("Faturamento.csv")
+        _raw = _ler_csv_caminho(caminho)
+
+    _raw = _normalizar_colunas(_raw)
+    dados = processar_dados(_raw)
 except FileNotFoundError as e:
     st.error(f"❌ {e}")
     st.stop()
@@ -258,354 +234,199 @@ except Exception as e:
     st.error(f"❌ Erro ao processar dados: {e}")
     st.stop()
 
-# =====================================================================
-# SIDEBAR: FILTROS
-# =====================================================================
+# ============================
+# FILTROS
+# ============================
 st.sidebar.header("🎚️ Filtros")
+anos = sorted(dados["Ano"].unique().tolist())
+meses = sorted(dados["Mes"].unique().tolist())
+lojas = sorted(dados["Loja"].dropna().unique().tolist())
 
-anos_disponiveis = sorted(dados["Ano"].unique().tolist())
-meses_disponiveis = sorted(dados["Mes"].unique().tolist())
-lojas_disponiveis = sorted(dados["Loja"].dropna().unique().tolist())
+c1, c2 = st.sidebar.columns(2)
+with c1:
+    all_years = st.checkbox("Selecionar todos os anos", value=True)
+with c2:
+    all_stores = st.checkbox("Selecionar todas as lojas", value=True)
 
-anos_selecionados = st.sidebar.multiselect(
-    "Ano",
-    options=anos_disponiveis,
-    default=anos_disponiveis
-)
+anos_sel = st.sidebar.multiselect("Ano", options=anos, default=anos if all_years else [])
+mes_label = ["Todos"] + [f"{m:02d} - {MESES[m]}" for m in meses]
+mes_sel = st.sidebar.selectbox("Mês", mes_label, index=0)
+lojas_sel = st.sidebar.multiselect("Lojas", options=lojas, default=lojas if all_stores else [])
 
-mes_opcoes = ["Todos"] + [f"{m:02d} - {MESES[m]}" for m in meses_disponiveis]
-mes_selecionado = st.sidebar.selectbox("Mês", mes_opcoes, index=0)
+f = dados[dados["Ano"].isin(anos_sel)] if anos_sel else dados.copy()
+if mes_sel != "Todos":
+    mes_num = int(mes_sel.split(" - ")[0])
+    f = f[f["Mes"] == mes_num]
+if lojas_sel:
+    f = f[f["Loja"].isin(lojas_sel)]
 
-lojas_selecionadas = st.sidebar.multiselect(
-    "Lojas (manual)",
-    options=lojas_disponiveis,
-    default=lojas_disponiveis
-)
-
-# Aplicar filtros
-dados_filtrados = dados[dados["Ano"].isin(anos_selecionados)].copy()
-
-if mes_selecionado != "Todos":
-    mes_numero = int(mes_selecionado.split(" - ")[0])
-    dados_filtrados = dados_filtrados[dados_filtrados["Mes"] == mes_numero]
-
-if lojas_selecionadas:
-    dados_filtrados = dados_filtrados[dados_filtrados["Loja"].isin(lojas_selecionadas)]
-
-if dados_filtrados.empty:
+if f.empty:
     st.warning("⚠️ Sem dados para este recorte. Ajuste os filtros.")
     st.stop()
 
-# =====================================================================
-# AGREGAÇÕES E CÁLCULOS
-# =====================================================================
-# Agregação mensal
-dados_mensal = (
-    dados_filtrados
-    .groupby(["Loja", "Mes/Ano"], as_index=False)
-    .agg({"Faturamento": "sum", "Pedidos": "sum"})
-    .sort_values(["Loja", "Mes/Ano"])
+# ============================
+# AGREGAÇÕES
+# ============================
+mensal = (
+    f.groupby(["Loja", "Mes/Ano"], as_index=False)
+     .agg({"Faturamento": "sum", "Pedidos": "sum"})
+     .sort_values(["Loja", "Mes/Ano"]) 
 )
-dados_mensal["Ticket Médio"] = (
-    dados_mensal["Faturamento"] / dados_mensal["Pedidos"].replace(0, np.nan)
-)
+mensal["Ticket Médio"] = mensal["Faturamento"] / mensal["Pedidos"].replace(0, np.nan)
 
-# KPIs gerais
-faturamento_total = float(dados_filtrados["Faturamento"].sum())
-pedidos_total = int(dados_filtrados["Pedidos"].sum())
-ticket_medio_geral = faturamento_total / pedidos_total if pedidos_total > 0 else 0.0
+fat_total = float(f["Faturamento"].sum())
+ped_total = int(f["Pedidos"].sum())
+ticket_geral = fat_total / ped_total if ped_total > 0 else 0.0
 
-# Cálculo de variações MoM
-meses_unicos = sorted(dados_mensal["Mes/Ano"].unique())
-variacao_fat = calcular_variacao_mom(dados_mensal, meses_unicos, "Faturamento")
-variacao_ped = calcular_variacao_mom(dados_mensal, meses_unicos, "Pedidos")
-variacao_ticket = calcular_variacao_ticket_mom(dados_mensal, meses_unicos)
+meses_unicos = sorted(mensal["Mes/Ano"].unique())
+var_fat = _variacao_mom(mensal, meses_unicos, "Faturamento")
+var_ped = _variacao_mom(mensal, meses_unicos, "Pedidos")
+var_ticket = _variacao_ticket_mom(mensal, meses_unicos)
 
-# =====================================================================
-# KPIS PRINCIPAIS
-# =====================================================================
+# ============================
+# KPIs
+# ============================
 col1, col2, col3, col4 = st.columns(4)
-
 with col1:
-    lojas_ativas = (
-        dados_mensal[dados_mensal["Mes/Ano"] == meses_unicos[-1]]["Loja"].nunique()
-        if meses_unicos else 0
-    )
+    lojas_ativas = mensal[mensal["Mes/Ano"] == meses_unicos[-1]]["Loja"].nunique() if meses_unicos else 0
     st.metric("🏪 Lojas ativas no recorte", lojas_ativas)
-
 with col2:
-    st.metric(
-        "💸 Faturamento (R$)",
-        formatar_moeda(faturamento_total),
-        delta=formatar_percentual(variacao_fat) if variacao_fat is not None else None
-    )
-
+    st.metric("💸 Faturamento (R$)", _fmt_moeda(fat_total), _fmt_pct(var_fat) if var_fat is not None else None)
 with col3:
-    st.metric(
-        "🧾 Pedidos",
-        formatar_inteiro(pedidos_total),
-        delta=formatar_percentual(variacao_ped) if variacao_ped is not None else None
-    )
-
+    st.metric("🧾 Pedidos", _fmt_int(ped_total), _fmt_pct(var_ped) if var_ped is not None else None)
 with col4:
-    st.metric(
-        "🎟️ Ticket médio (R$)",
-        formatar_moeda(ticket_medio_geral),
-        delta=formatar_percentual(variacao_ticket) if variacao_ticket is not None else None
-    )
+    st.metric("🎟️ Ticket médio (R$)", _fmt_moeda(ticket_geral), _fmt_pct(var_ticket) if var_ticket is not None else None)
 
-st.caption(
-    "ℹ️ **Os deltas (%) mostram a variação mês contra mês (MoM) do mesmo recorte**: "
-    "comparamos o mês atual com o mês imediatamente anterior."
-)
+st.caption("ℹ️ Deltas (%) comparam o mês atual com o imediatamente anterior do mesmo recorte.")
 
-# =====================================================================
+# ============================
 # ABAS
-# =====================================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+# ============================
+t1, t2, t3, t4, t5, t6 = st.tabs([
     "📊 Gráficos",
     "🏆 Rankings",
     "🚨 Alertas",
     "🗓️ Sazonalidade",
-    "📋 Tabela"
+    "📋 Tabela",
+    "⬇️ Exportar"
 ])
 
-# --- ABA 1: GRÁFICOS ---
-with tab1:
-    col_g1, col_g2 = st.columns(2)
-    
-    with col_g1:
-        fig_fat = px.line(
-            dados_mensal,
-            x="Mes/Ano",
-            y="Faturamento",
-            color="Loja",
-            markers=True,
-            title="Faturamento mensal por loja"
-        )
+# --- GRÁFICOS ---
+with t1:
+    a, b = st.columns(2)
+    with a:
+        fig_fat = px.line(mensal, x="Mes/Ano", y="Faturamento", color="Loja", markers=True,
+                          title="Faturamento mensal por loja")
         fig_fat.update_layout(hovermode="x unified", yaxis_tickprefix="R$ ")
         st.plotly_chart(fig_fat, use_container_width=True)
-    
-    with col_g2:
-        fig_ped = px.line(
-            dados_mensal,
-            x="Mes/Ano",
-            y="Pedidos",
-            color="Loja",
-            markers=True,
-            title="Pedidos mensais por loja"
-        )
+    with b:
+        fig_ped = px.line(mensal, x="Mes/Ano", y="Pedidos", color="Loja", markers=True,
+                          title="Pedidos mensais por loja")
         fig_ped.update_layout(hovermode="x unified")
         st.plotly_chart(fig_ped, use_container_width=True)
-    
-    fig_ticket = px.line(
-        dados_mensal,
-        x="Mes/Ano",
-        y="Ticket Médio",
-        color="Loja",
-        markers=True,
-        title="Ticket médio mensal (R$)"
-    )
-    fig_ticket.update_layout(yaxis_tickprefix="R$ ")
-    st.plotly_chart(fig_ticket, use_container_width=True)
 
-# --- ABA 2: RANKINGS ---
-with tab2:
+    fig_tk = px.line(mensal, x="Mes/Ano", y="Ticket Médio", color="Loja", markers=True,
+                     title="Ticket médio mensal (R$)")
+    fig_tk.update_layout(yaxis_tickprefix="R$ ")
+    st.plotly_chart(fig_tk, use_container_width=True)
+
+# --- RANKINGS ---
+with t2:
     st.subheader("Top 10 — Faturamento no recorte")
-    top_faturamento = (
-        dados_filtrados
-        .groupby("Loja")["Faturamento"]
-        .sum()
-        .sort_values(ascending=False)
-        .head(TOP_N)
-        .reset_index()
+    top_fat = (
+        f.groupby("Loja")["Faturamento"].sum().sort_values(ascending=False).head(TOP_N).reset_index()
     )
-    
-    if not top_faturamento.empty:
-        fig_top = px.bar(
-            top_faturamento,
-            x="Loja",
-            y="Faturamento",
-            title=f"Top {TOP_N} por Faturamento (R$)"
-        )
+    if not top_fat.empty:
+        fig_top = px.bar(top_fat, x="Loja", y="Faturamento", title=f"Top {TOP_N} por Faturamento (R$)")
         fig_top.update_layout(yaxis_tickprefix="R$ ")
         st.plotly_chart(fig_top, use_container_width=True)
-    
+
     st.subheader("Maiores crescimentos (MoM)")
     if len(meses_unicos) >= 2:
-        mes_atual, mes_anterior = meses_unicos[-1], meses_unicos[-2]
-        
-        atual = dados_mensal[dados_mensal["Mes/Ano"] == mes_atual].set_index("Loja")
-        anterior = dados_mensal[dados_mensal["Mes/Ano"] == mes_anterior].set_index("Loja")
-        
-        comparacao = atual[["Faturamento"]].join(
-            anterior[["Faturamento"]],
-            lsuffix="_atual",
-            rsuffix="_anterior"
-        )
-        comparacao["MoM (%)"] = (
-            (comparacao["Faturamento_atual"] - comparacao["Faturamento_anterior"]) /
-            comparacao["Faturamento_anterior"].replace({0: np.nan}) * 100
-        )
-        
-        crescimentos = (
-            comparacao
-            .dropna(subset=["MoM (%)"])
-            .sort_values("MoM (%)", ascending=False)
-            .head(TOP_N)
-            .reset_index()
-        )
-        
-        fig_cresc = px.bar(
-            crescimentos,
-            x="Loja",
-            y="MoM (%)",
-            title=f"Top {TOP_N} Crescimentos MoM (%)"
-        )
-        st.plotly_chart(fig_cresc, use_container_width=True)
+        a, b = meses_unicos[-1], meses_unicos[-2]
+        cur = mensal[mensal["Mes/Ano"] == a].set_index("Loja")
+        prv = mensal[mensal["Mes/Ano"] == b].set_index("Loja")
+        comp = cur[["Faturamento"]].join(prv[["Faturamento"]], lsuffix="_atual", rsuffix="_anterior")
+        comp["MoM (%)"] = (comp["Faturamento_atual"] - comp["Faturamento_anterior"]) / comp["Faturamento_anterior"].replace({0: np.nan}) * 100
+        comp = comp.dropna(subset=["MoM (%)"]).sort_values("MoM (%)", ascending=False).head(TOP_N).reset_index()
+        fig_c = px.bar(comp, x="Loja", y="MoM (%)", title=f"Top {TOP_N} Crescimentos MoM (%)")
+        st.plotly_chart(fig_c, use_container_width=True)
     else:
         st.info("Precisa de pelo menos 2 meses para comparar.")
 
-# --- ABA 3: ALERTAS ---
-with tab3:
+# --- ALERTAS ---
+with t3:
     st.subheader("Alertas do período")
-    
-    alertas = gerar_alertas(dados_mensal, dados_filtrados, meses_unicos)
-    
-    # Exibir gráfico de quedas se houver dados suficientes
+    al = gerar_alertas(mensal, f, meses_unicos)
+
     if len(meses_unicos) >= 2:
-        mes_atual, mes_anterior = meses_unicos[-1], meses_unicos[-2]
-        
-        atual = dados_mensal[dados_mensal["Mes/Ano"] == mes_atual].set_index("Loja")
-        anterior = dados_mensal[dados_mensal["Mes/Ano"] == mes_anterior].set_index("Loja")
-        
-        comparacao = atual[["Faturamento"]].join(
-            anterior[["Faturamento"]],
-            lsuffix="_atual",
-            rsuffix="_anterior"
-        )
-        comparacao["var_%"] = (
-            (comparacao["Faturamento_atual"] - comparacao["Faturamento_anterior"]) /
-            comparacao["Faturamento_anterior"].replace({0: np.nan}) * 100
-        )
-        
-        quedas = (
-            comparacao
-            .dropna()
-            .sort_values("var_%")
-            .head(TOP_N)
-            .reset_index()
-        )
-        
-        fig_quedas = px.bar(
-            quedas,
-            x="Loja",
-            y="var_%",
-            title="Maiores quedas (MoM %)"
-        )
-        st.plotly_chart(fig_quedas, use_container_width=True)
-    
-    # Exibir alertas
-    if alertas:
-        for tipo, mensagem in alertas:
+        a, b = meses_unicos[-1], meses_unicos[-2]
+        cur = mensal[mensal["Mes/Ano"] == a].set_index("Loja")
+        prv = mensal[mensal["Mes/Ano"] == b].set_index("Loja")
+        comp = cur[["Faturamento"]].join(prv[["Faturamento"]], lsuffix="_atual", rsuffix="_anterior")
+        comp["var_%"] = (comp["Faturamento_atual"] - comp["Faturamento_anterior"]) / comp["Faturamento_anterior"].replace({0: np.nan}) * 100
+        quedas = comp.dropna().sort_values("var_%").head(TOP_N).reset_index()
+        fig_q = px.bar(quedas, x="Loja", y="var_%", title="Maiores quedas (MoM %)")
+        st.plotly_chart(fig_q, use_container_width=True)
+
+    if al:
+        for tipo, msg in al:
             if tipo == "success":
-                st.success(mensagem)
+                st.success(msg)
             elif tipo == "error":
-                st.error(mensagem)
+                st.error(msg)
             else:
-                st.warning(mensagem)
+                st.warning(msg)
     else:
         st.success("✅ Nenhum alerta relevante encontrado.")
 
-# --- ABA 4: SAZONALIDADE ---
-with tab4:
+# --- SAZONALIDADE ---
+with t4:
     st.subheader("Faturamento por mês do ano (histórico)")
-    
-    sazonalidade = (
-        dados
-        .groupby(dados["Data"].dt.month)["Faturamento"]
-        .sum()
-        .reset_index()
-    )
-    sazonalidade.columns = ["Mes", "Faturamento"]
-    sazonalidade["Mês"] = sazonalidade["Mes"].map(lambda m: f"{m:02d} - {MESES[m]}")
-    
-    fig_saz = px.bar(
-        sazonalidade,
-        x="Mês",
-        y="Faturamento",
-        title="Sazonalidade — Histórico"
-    )
-    fig_saz.update_layout(yaxis_tickprefix="R$ ")
-    st.plotly_chart(fig_saz, use_container_width=True)
-    
+    saz = dados.groupby(dados["Data"].dt.month)["Faturamento"].sum().reset_index()
+    saz.columns = ["Mes", "Faturamento"]
+    saz["Mês"] = saz["Mes"].map(lambda m: f"{m:02d} - {MESES[m]}")
+    fig_s = px.bar(saz, x="Mês", y="Faturamento", title="Sazonalidade — Histórico")
+    fig_s.update_layout(yaxis_tickprefix="R$ ")
+    st.plotly_chart(fig_s, use_container_width=True)
+
     st.subheader("Heatmap — Loja x Mês/Ano (recorte)")
-    pivot = dados_mensal.pivot_table(
-        index="Loja",
-        columns="Mes/Ano",
-        values="Faturamento",
-        aggfunc="sum",
-        fill_value=0.0
-    )
-    
-    if not pivot.empty:
-        fig_heat = px.imshow(
-            pivot,
-            aspect="auto",
-            labels=dict(x="Mês/Ano", y="Loja", color="R$"),
-            title="Heatmap de Faturamento"
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
+    pv = mensal.pivot_table(index="Loja", columns="Mes/Ano", values="Faturamento", aggfunc="sum", fill_value=0.0)
+    if not pv.empty:
+        fig_h = px.imshow(pv, aspect="auto", labels=dict(x="Mês/Ano", y="Loja", color="R$"), title="Heatmap de Faturamento")
+        st.plotly_chart(fig_h, use_container_width=True)
 
-# --- ABA 5: TABELA ---
-with tab5:
+# --- TABELAS ---
+with t5:
     st.subheader("Transacional do recorte")
-    
-    colunas_exibir = [
-        c for c in [
-            "Data", "Loja", "Faturamento", "Pedidos", "Ticket Médio",
-            "Ano", "Mes", "MesNome", "Mes/Ano"
-        ]
-        if c in dados_filtrados.columns
-    ]
-    
-    st.dataframe(
-        dados_filtrados[colunas_exibir],
-        use_container_width=True,
-        hide_index=True
-    )
-    
+    cols = [c for c in ["Data", "Loja", "Faturamento", "Pedidos", "Ticket Médio", "Ano", "Mes", "MesNome", "Mes/Ano"] if c in f.columns]
+    st.dataframe(f[cols], use_container_width=True, hide_index=True)
+
     st.subheader("Agregado mensal por loja (recorte)")
-    st.dataframe(dados_mensal, use_container_width=True, hide_index=True)
+    st.dataframe(mensal, use_container_width=True, hide_index=True)
 
-# =====================================================================
-# INSIGHTS E DOCUMENTAÇÃO
-# =====================================================================
-st.markdown("""
-### 💡 Insights rápidos
-- **Concentre-se nas variações MoM**: os deltas (%) nos KPIs comparam o mês atual do recorte com o mês anterior do recorte.
-- **Crescimentos/Quedas**: verifique a aba **🏆 Rankings** (Top MoM) e **🚨 Alertas** (quedas relevantes ≤ −30%).
-- **Sazonalidade**: use **🗓️ Sazonalidade** para planejar estoque e campanhas em meses historicamente fortes/fracos.
-""")
+# --- EXPORTAR ---
+with t6:
+    st.subheader("Exportar CSVs do recorte atual")
 
-with st.expander("🧮 Como calculamos & objetivo do dashboard"):
-    st.markdown("""
-**Objetivo**: oferecer uma visão **clara e mínima** do desempenho por loja, destacando **o que mudou** e **onde agir** (quedas, picos e sazonalidade).
+    buf_f = io.StringIO()
+    f.to_csv(buf_f, index=False)
+    st.download_button("⬇️ Baixar transacional filtrado (CSV)", buf_f.getvalue(), file_name="hora_do_pastel_transacional.csv", mime="text/csv")
 
-**Fórmulas (resumo)**
-- **Faturamento total (recorte)** = soma de `Faturamento` dos registros filtrados.
-- **Pedidos totais (recorte)** = soma de `Pedidos` dos registros filtrados.
-- **Ticket médio (recorte)** = `Faturamento total / Pedidos totais`.
-- **MoM (%)** (para cada KPI) = `(valor_mês_atual − valor_mês_anterior) / valor_mês_anterior × 100`.
-  - Para **Ticket médio**, primeiro calculamos `Faturamento_mês / Pedidos_mês` em cada mês e depois aplicamos a fórmula de MoM.
+    buf_m = io.StringIO()
+    mensal.to_csv(buf_m, index=False)
+    st.download_button("⬇️ Baixar agregado mensal por loja (CSV)", buf_m.getvalue(), file_name="hora_do_pastel_agregado_mensal.csv", mime="text/csv")
 
-**Melhorias da versão 2.0**
-- ✅ Código modular com funções reutilizáveis
-- ✅ Cache de dados para melhor performance
-- ✅ Tratamento de erros aprimorado
-- ✅ Constantes bem definidas
-- ✅ Type hints e documentação
-- ✅ Código mais limpo e manutenível
-""")
-
-st.caption("Minimalista por padrão; aprofunde-se conforme a necessidade nas abas acima.")
+# ============================
+# RODAPÉ
+# ============================
+st.markdown(
+    """
+---
+### ℹ️ Notas
+- **Objetivo**: visão clara e mínima do desempenho por loja, destacando *o que mudou* (MoM) e *onde agir* (quedas, recordes e sazonalidade).
+- **MoM (%)**: `(mês atual − mês anterior) / mês anterior × 100`.
+- **Ticket médio (geral)**: `Faturamento total / Pedidos totais` no recorte.
+- **Dica**: use a aba *Exportar* para compartilhar rapidamente os dados filtrados.
+"""
+)
