@@ -1,0 +1,10 @@
+﻿__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.vscode/
+.DS_Store
+Thumbs.db
+.streamlit/
+Faturamento.csv
